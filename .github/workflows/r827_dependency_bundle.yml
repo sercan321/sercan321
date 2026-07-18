@@ -1,4 +1,4 @@
-name: R827 Official Flutter Engine Maven Bundle
+name: R827 Official Pub Archive Bundle
 on:
   pull_request:
     branches: [master]
@@ -9,66 +9,81 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Fetch and verify exact Flutter engine Maven artifacts
+      - name: Fetch and verify exact pub.dev archives
         shell: bash
         run: |
           set -euo pipefail
-          base='https://storage.googleapis.com/download.flutter.io'
-          version='1.0.0-83675ed27633283e7fc296c8bca22e841224c096'
-          mkdir -p bundle/repository/io/flutter bundle/reports work
-          artifacts=(flutter_embedding_debug armeabi_v7a_debug arm64_v8a_debug x86_64_debug)
-          printf 'artifact\tversion\textension\tsize_bytes\tsha256\tsha1\turl\tupstream_checksum\n' > bundle/reports/provenance.tsv
-          for artifact in "${artifacts[@]}"; do
-            rel="io/flutter/$artifact/$version"
-            dir="bundle/repository/$rel"
-            mkdir -p "$dir"
-            pom="$artifact-$version.pom"
-            curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-all-errors --connect-timeout 20 --max-time 180 "$base/$rel/$pom" -o "$dir/$pom"
-            extension=$(python3 - "$dir/$pom" <<'PY'
-          import sys, xml.etree.ElementTree as ET
-          root=ET.parse(sys.argv[1]).getroot()
-          ns={'m':'http://maven.apache.org/POM/4.0.0'}
-          packaging=root.findtext('m:packaging',default='jar',namespaces=ns).strip()
-          print('aar' if packaging=='aar' else 'jar')
-          PY
-            )
-            file="$artifact-$version.$extension"
-            url="$base/$rel/$file"
-            dst="$dir/$file"
-            curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-all-errors --connect-timeout 20 --max-time 900 "$url" -o "$dst"
-            size=$(stat -c %s "$dst")
-            sha256=$(sha256sum "$dst" | awk '{print $1}')
-            sha1=$(sha1sum "$dst" | awk '{print $1}')
-            checksum='https-download-only'
-            if curl --fail --location --silent --show-error --max-time 60 "$url.sha256" -o "$dir/$file.sha256"; then
-              expected=$(tr -d '[:space:]' < "$dir/$file.sha256")
-              test "$expected" = "$sha256"
-              checksum='sha256'
-            elif curl --fail --location --silent --show-error --max-time 60 "$url.sha1" -o "$dir/$file.sha1"; then
-              expected=$(tr -d '[:space:]' < "$dir/$file.sha1")
-              test "$expected" = "$sha1"
-              checksum='sha1'
-            fi
-            unzip -tq "$dst"
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$artifact" "$version" "$extension" "$size" "$sha256" "$sha1" "$url" "$checksum" >> bundle/reports/provenance.tsv
-          done
+          mkdir -p bundle/archives bundle/reports
           python3 - <<'PY'
-          import csv, pathlib
-          rows=list(csv.DictReader(pathlib.Path('bundle/reports/provenance.tsv').open(),delimiter='\t'))
-          expected={'flutter_embedding_debug','armeabi_v7a_debug','arm64_v8a_debug','x86_64_debug'}
-          if {r['artifact'] for r in rows} != expected:
-              raise SystemExit(rows)
-          if any(int(r['size_bytes']) <= 0 for r in rows):
-              raise SystemExit(rows)
+          import base64, csv, hashlib, io, json, pathlib, tarfile, urllib.parse, urllib.request
+          payload = base64.b64decode('Y2FtZXJhCTAuMTAuNgpjYW1lcmFfYW5kcm9pZAkwLjEwLjkrMwpjYW1lcmFfYXZmb3VuZGF0aW9uCTAuOS4yMSsxCmNhbWVyYV9wbGF0Zm9ybV9pbnRlcmZhY2UJMi4xMi4wCmNhbWVyYV93ZWIJMC4zLjUrMwpjcm9zc19maWxlCTAuMy41KzIKZmx1dHRlcl9saW50cwk0LjAuMApmbHV0dGVyX21hdGhfZm9yawkwLjcuNApmbHV0dGVyX3BsdWdpbl9hbmRyb2lkX2xpZmVjeWNsZQkyLjAuMzQKZmx1dHRlcl9zdmcJMi4yLjQKbGludHMJNC4wLjAKbmVzdGVkCTEuMC4wCnBhdGhfcGFyc2luZwkxLjEuMApwYXRoX3Byb3ZpZGVyCTIuMS41CnBhdGhfcHJvdmlkZXJfYW5kcm9pZAkyLjIuMjMKcGF0aF9wcm92aWRlcl9mb3VuZGF0aW9uCTIuNC4yCnBhdGhfcHJvdmlkZXJfbGludXgJMi4yLjEKcGF0aF9wcm92aWRlcl9wbGF0Zm9ybV9pbnRlcmZhY2UJMi4xLjIKcGF0aF9wcm92aWRlcl93aW5kb3dzCTIuMy4wCnBsdWdpbl9wbGF0Zm9ybV9pbnRlcmZhY2UJMi4xLjgKcHJvdmlkZXIJNi4xLjUrMQpzaGFyZWRfcHJlZmVyZW5jZXMJMi41LjUKc2hhcmVkX3ByZWZlcmVuY2VzX2FuZHJvaWQJMi40LjIzCnNoYXJlZF9wcmVmZXJlbmNlc19mb3VuZGF0aW9uCTIuNS42CnNoYXJlZF9wcmVmZXJlbmNlc19saW51eAkyLjQuMQpzaGFyZWRfcHJlZmVyZW5jZXNfcGxhdGZvcm1faW50ZXJmYWNlCTIuNC4yCnNoYXJlZF9wcmVmZXJlbmNlc193ZWIJMi40LjMKc2hhcmVkX3ByZWZlcmVuY2VzX3dpbmRvd3MJMi40LjEKc3RyZWFtX3RyYW5zZm9ybQkyLjEuMQp0dXBsZQkyLjAuMgp2ZWN0b3JfZ3JhcGhpY3MJMS4xLjIwCnZlY3Rvcl9ncmFwaGljc19jb2RlYwkxLjEuMTMKdmVjdG9yX2dyYXBoaWNzX2NvbXBpbGVyCTEuMi4wCndlYnZpZXdfZmx1dHRlcgk0LjcuMAp3ZWJ2aWV3X2ZsdXR0ZXJfYW5kcm9pZAkzLjE2LjQKd2Vidmlld19mbHV0dGVyX3BsYXRmb3JtX2ludGVyZmFjZQkyLjE1LjEKd2Vidmlld19mbHV0dGVyX3drd2VidmlldwkzLjI0LjIKeGRnX2RpcmVjdG9yaWVzCTEuMS4wCg==').decode()
+          packages = list(csv.reader(io.StringIO(payload), delimiter='\t'))
+          if len(packages) != 38:
+              raise SystemExit(f'expected 38 packages, got {len(packages)}')
+          root = pathlib.Path('bundle')
+          rows = []
+          for name, version in packages:
+              qn = urllib.parse.quote(name, safe='')
+              qv = urllib.parse.quote(version, safe='')
+              metadata_url = f'https://pub.dev/api/packages/{qn}/versions/{qv}'
+              request = urllib.request.Request(metadata_url, headers={'User-Agent': 'MathPro-R827-audit/2.0'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  metadata = json.load(response)
+              archive_url = metadata['archive_url']
+              expected = metadata['archive_sha256'].lower()
+              destination = root / 'archives' / f'{name}-{version}.tar.gz'
+              digest = hashlib.sha256()
+              size = 0
+              request = urllib.request.Request(archive_url, headers={'User-Agent': 'MathPro-R827-audit/2.0'})
+              with urllib.request.urlopen(request, timeout=240) as response, destination.open('wb') as output:
+                  while True:
+                      block = response.read(1048576)
+                      if not block:
+                          break
+                      output.write(block)
+                      digest.update(block)
+                      size += len(block)
+              actual = digest.hexdigest()
+              if actual != expected:
+                  raise SystemExit(f'{name} {version} SHA mismatch: {actual} != {expected}')
+              with tarfile.open(destination, 'r:gz') as archive:
+                  members = archive.getmembers()
+                  if not members:
+                      raise SystemExit(f'{name} {version}: empty archive')
+                  for member in members:
+                      path = pathlib.PurePosixPath(member.name)
+                      if path.is_absolute() or '..' in path.parts:
+                          raise SystemExit(f'{name} {version}: unsafe path {member.name!r}')
+                  pubspec_members = [m for m in members if pathlib.PurePosixPath(m.name).as_posix() == 'pubspec.yaml']
+                  if len(pubspec_members) != 1:
+                      raise SystemExit(f'{name} {version}: expected one root pubspec.yaml, got {len(pubspec_members)}')
+                  pubspec_text = archive.extractfile(pubspec_members[0]).read().decode('utf-8')
+                  found_name = None
+                  found_version = None
+                  for line in pubspec_text.splitlines():
+                      if line.startswith('name:') and found_name is None:
+                          found_name = line.split(':', 1)[1].strip().strip('"\'')
+                      if line.startswith('version:') and found_version is None:
+                          found_version = line.split(':', 1)[1].strip().strip('"\'')
+                  if found_name != name or found_version != version:
+                      raise SystemExit(f'{name} {version}: pubspec identity {found_name}@{found_version}')
+              rows.append((name, version, expected, actual, size, archive_url, metadata_url))
+              print('PASS', name, version, actual, size)
+          report = root / 'reports' / 'provenance.tsv'
+          with report.open('w', newline='') as output:
+              writer = csv.writer(output, delimiter='\t', lineterminator='\n')
+              writer.writerow(('name', 'version', 'api_sha256', 'actual_sha256', 'size_bytes', 'archive_url', 'metadata_url'))
+              writer.writerows(rows)
+          (root / 'reports' / 'summary.json').write_text(json.dumps({'expected': 38, 'verified': len(rows), 'failures': []}, indent=2, sort_keys=True) + '\n')
           PY
-          (cd bundle && zip -0 -qr ../r827_flutter_engine_maven_bundle.zip repository reports)
-          sha256sum r827_flutter_engine_maven_bundle.zip | tee bundle/reports/bundle.sha256
-      - name: Upload exact Maven repository bundle
+          tar -C bundle -czf r827_official_pub_archives_38.tar.gz archives reports
+          sha256sum r827_official_pub_archives_38.tar.gz | tee bundle/reports/bundle.sha256
+      - name: Upload verified archive bundle
         uses: actions/upload-artifact@v4
         with:
-          name: r827-flutter-engine-maven-bundle
+          name: r827-official-pub-archives-38
           path: |
-            r827_flutter_engine_maven_bundle.zip
+            r827_official_pub_archives_38.tar.gz
             bundle/reports/
           retention-days: 1
           compression-level: 0
