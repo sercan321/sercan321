@@ -1,70 +1,73 @@
-name: R827 Official Pub Dependency Bundle
-on: [push, pull_request]
+name: R827 Official Gradle Plugin Bundle
+on:
+  pull_request:
+    branches: [master]
 permissions:
   contents: read
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
-      - name: Fetch and verify official archives
+      - name: Fetch and verify exact Gradle Plugin Portal artifacts
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p bundle/archives bundle/reports
+          base='https://plugins.gradle.org/m2'
+          out='bundle/repository'
+          reports='bundle/reports'
+          mkdir -p "$out" "$reports"
+          paths=(
+            'org/gradle/kotlin/kotlin-dsl/org.gradle.kotlin.kotlin-dsl.gradle.plugin/4.3.0/org.gradle.kotlin.kotlin-dsl.gradle.plugin-4.3.0.pom'
+            'org/gradle/kotlin/gradle-kotlin-dsl-plugins/4.3.0/gradle-kotlin-dsl-plugins-4.3.0.pom'
+            'org/gradle/kotlin/gradle-kotlin-dsl-plugins/4.3.0/gradle-kotlin-dsl-plugins-4.3.0.module'
+            'org/gradle/kotlin/gradle-kotlin-dsl-plugins/4.3.0/gradle-kotlin-dsl-plugins-4.3.0.jar'
+          )
+          : > "$reports/provenance.tsv"
+          printf 'path\turl\tsha256\tsha1\tsize_bytes\n' >> "$reports/provenance.tsv"
+          for path in "${paths[@]}"; do
+            dst="$out/$path"
+            mkdir -p "$(dirname "$dst")"
+            url="$base/$path"
+            curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-all-errors --connect-timeout 20 --max-time 180 "$url" -o "$dst"
+            sha256=$(sha256sum "$dst" | awk '{print $1}')
+            sha1=$(sha1sum "$dst" | awk '{print $1}')
+            size=$(stat -c %s "$dst")
+            printf '%s\t%s\t%s\t%s\t%s\n' "$path" "$url" "$sha256" "$sha1" "$size" >> "$reports/provenance.tsv"
+            if curl --fail --location --silent --show-error --max-time 60 "$url.sha256" -o "$dst.sha256"; then
+              expected=$(tr -d '[:space:]' < "$dst.sha256")
+              test "$expected" = "$sha256"
+            elif curl --fail --location --silent --show-error --max-time 60 "$url.sha1" -o "$dst.sha1"; then
+              expected=$(tr -d '[:space:]' < "$dst.sha1")
+              test "$expected" = "$sha1"
+            else
+              echo "No upstream checksum file for $url" >&2
+              exit 2
+            fi
+          done
           python3 - <<'PY'
-          import base64, csv, hashlib, io, json, pathlib, urllib.parse, urllib.request
-          payload = base64.b64decode('YXJncwkyLjcuMAphc3luYwkyLjEzLjEKYm9vbGVhbl9zZWxlY3RvcgkyLjEuMgpjYW1lcmEJMC4xMC42CmNhbWVyYV9hbmRyb2lkCTAuMTAuOSszCmNhbWVyYV9hdmZvdW5kYXRpb24JMC45LjIxKzEKY2FtZXJhX3BsYXRmb3JtX2ludGVyZmFjZQkyLjEyLjAKY2FtZXJhX3dlYgkwLjMuNSszCmNoYXJhY3RlcnMJMS40LjEKY2xvY2sJMS4xLjIKY29sbGVjdGlvbgkxLjE5LjEKY3Jvc3NfZmlsZQkwLjMuNSsyCmNyeXB0bwkzLjAuNwpjdXBlcnRpbm9faWNvbnMJMS4wLjkKZmFrZV9hc3luYwkxLjMuMwpmZmkJMi4yLjAKZmlsZQk3LjAuMQpmbHV0dGVyX2xpbnRzCTQuMC4wCmZsdXR0ZXJfbWF0aF9mb3JrCTAuNy40CmZsdXR0ZXJfcGx1Z2luX2FuZHJvaWRfbGlmZWN5Y2xlCTIuMC4zNApmbHV0dGVyX3N2ZwkyLjIuNApodHRwCTEuNi4wCmh0dHBfcGFyc2VyCTQuMS4yCmxlYWtfdHJhY2tlcgkxMS4wLjIKbGVha190cmFja2VyX2ZsdXR0ZXJfdGVzdGluZwkzLjAuMTAKbGVha190cmFja2VyX3Rlc3RpbmcJMy4wLjIKbGludHMJNC4wLjAKbWF0Y2hlcgkwLjEyLjE5Cm1hdGVyaWFsX2NvbG9yX3V0aWxpdGllcwkwLjEzLjAKbWV0YQkxLjE4LjAKbmVzdGVkCTEuMC4wCnBhdGgJMS45LjEKcGF0aF9wYXJzaW5nCTEuMS4wCnBhdGhfcHJvdmlkZXIJMi4xLjUKcGF0aF9wcm92aWRlcl9hbmRyb2lkCTIuMi4yMwpwYXRoX3Byb3ZpZGVyX2ZvdW5kYXRpb24JMi40LjIKcGF0aF9wcm92aWRlcl9saW51eAkyLjIuMQpwYXRoX3Byb3ZpZGVyX3BsYXRmb3JtX2ludGVyZmFjZQkyLjEuMgpwYXRoX3Byb3ZpZGVyX3dpbmRvd3MJMi4zLjAKcGV0aXRwYXJzZXIJNy4wLjIKcGxhdGZvcm0JMy4xLjYKcGx1Z2luX3BsYXRmb3JtX2ludGVyZmFjZQkyLjEuOApwcm9jZXNzCTUuMC41CnByb3ZpZGVyCTYuMS41KzEKc2hhcmVkX3ByZWZlcmVuY2VzCTIuNS41CnNoYXJlZF9wcmVmZXJlbmNlc19hbmRyb2lkCTIuNC4yMwpzaGFyZWRfcHJlZmVyZW5jZXNfZm91bmRhdGlvbgkyLjUuNgpzaGFyZWRfcHJlZmVyZW5jZXNfbGludXgJMi40LjEKc2hhcmVkX3ByZWZlcmVuY2VzX3BsYXRmb3JtX2ludGVyZmFjZQkyLjQuMgpzaGFyZWRfcHJlZmVyZW5jZXNfd2ViCTIuNC4zCnNoYXJlZF9wcmVmZXJlbmNlc193aW5kb3dzCTIuNC4xCnNvdXJjZV9zcGFuCTEuMTAuMgpzdGFja190cmFjZQkxLjEyLjEKc3RyZWFtX2NoYW5uZWwJMi4xLjQKc3RyZWFtX3RyYW5zZm9ybQkyLjEuMQpzdHJpbmdfc2Nhbm5lcgkxLjQuMQpzeW5jX2h0dHAJMC4zLjEKdGVybV9nbHlwaAkxLjIuMgp0ZXN0X2FwaQkwLjcuMTEKdHVwbGUJMi4wLjIKdHlwZWRfZGF0YQkxLjQuMAp2ZWN0b3JfZ3JhcGhpY3MJMS4xLjIwCnZlY3Rvcl9ncmFwaGljc19jb2RlYwkxLjEuMTMKdmVjdG9yX2dyYXBoaWNzX2NvbXBpbGVyCTEuMi4wCnZlY3Rvcl9tYXRoCTIuMi4wCnZtX3NlcnZpY2UJMTUuMi4wCndlYgkxLjEuMQp3ZWJkcml2ZXIJMy4xLjAKd2Vidmlld19mbHV0dGVyCTQuNy4wCndlYnZpZXdfZmx1dHRlcl9hbmRyb2lkCTMuMTYuNAp3ZWJ2aWV3X2ZsdXR0ZXJfcGxhdGZvcm1faW50ZXJmYWNlCTIuMTUuMQp3ZWJ2aWV3X2ZsdXR0ZXJfd2t3ZWJ2aWV3CTMuMjQuMgp4ZGdfZGlyZWN0b3JpZXMJMS4xLjAKeG1sCTYuNi4xCg==').decode()
-          root = pathlib.Path('bundle')
-          (root / 'reports' / 'packages.tsv').write_text(payload)
-          out = []
-          failures = []
-          for name, version in csv.reader(io.StringIO(payload), delimiter='\t'):
-              try:
-                  qn = urllib.parse.quote(name, safe='')
-                  qv = urllib.parse.quote(version, safe='')
-                  meta_url = f'https://pub.dev/api/packages/{qn}/versions/{qv}'
-                  req = urllib.request.Request(meta_url, headers={'User-Agent': 'MathPro-R827-audit/1.0'})
-                  with urllib.request.urlopen(req, timeout=60) as response:
-                      meta = json.load(response)
-                  url = meta['archive_url']
-                  expected = meta['archive_sha256'].lower()
-                  destination = root / 'archives' / f'{name}-{version}.tar.gz'
-                  digest = hashlib.sha256()
-                  size = 0
-                  req = urllib.request.Request(url, headers={'User-Agent': 'MathPro-R827-audit/1.0'})
-                  with urllib.request.urlopen(req, timeout=180) as response, destination.open('wb') as output:
-                      while True:
-                          block = response.read(1048576)
-                          if not block:
-                              break
-                          output.write(block)
-                          digest.update(block)
-                          size += len(block)
-                  actual = digest.hexdigest()
-                  if actual != expected:
-                      raise RuntimeError(f'SHA mismatch actual={actual} api={expected}')
-                  out.append((name, version, expected, actual, size, url, meta_url))
-                  print('PASS', name, version, actual, size)
-              except Exception as exc:
-                  failures.append((name, version, str(exc)))
-                  print('FAIL', name, version, exc)
-          with (root / 'reports' / 'verified.tsv').open('w', newline='') as output:
-              writer = csv.writer(output, delimiter='\t', lineterminator='\n')
-              writer.writerow(('name', 'version', 'api_sha256', 'actual_sha256', 'size_bytes', 'archive_url', 'metadata_url'))
-              writer.writerows(out)
-          summary = {'expected': 74, 'verified': len(out), 'failures': failures}
-          (root / 'reports' / 'summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
-          if len(out) != 74 or failures:
-              raise SystemExit(summary)
+          import pathlib, xml.etree.ElementTree as ET
+          root = pathlib.Path('bundle/repository')
+          marker = root / 'org/gradle/kotlin/kotlin-dsl/org.gradle.kotlin.kotlin-dsl.gradle.plugin/4.3.0/org.gradle.kotlin.kotlin-dsl.gradle.plugin-4.3.0.pom'
+          pom = ET.parse(marker).getroot()
+          ns = {'m': 'http://maven.apache.org/POM/4.0.0'}
+          dep = pom.find('.//m:dependency', ns)
+          actual = tuple(dep.find(f'm:{n}', ns).text for n in ('groupId','artifactId','version'))
+          expected = ('org.gradle.kotlin','gradle-kotlin-dsl-plugins','4.3.0')
+          if actual != expected:
+              raise SystemExit(f'marker target mismatch: {actual!r}')
+          jar = root / 'org/gradle/kotlin/gradle-kotlin-dsl-plugins/4.3.0/gradle-kotlin-dsl-plugins-4.3.0.jar'
+          if jar.stat().st_size < 40000:
+              raise SystemExit('implementation jar unexpectedly small')
           PY
-          tar -C bundle -czf r827_official_pub_dependency_bundle.tar.gz archives reports
-          sha256sum r827_official_pub_dependency_bundle.tar.gz | tee bundle/reports/bundle_sha256.txt
-      - uses: actions/upload-artifact@v4
+          (cd bundle && zip -qr ../r827_gradle_plugin_portal_4.3.0.zip repository reports)
+          sha256sum r827_gradle_plugin_portal_4.3.0.zip | tee "$reports/bundle.sha256"
+      - name: Upload exact repository bundle
+        uses: actions/upload-artifact@v4
         with:
-          name: r827-official-pub-dependency-bundle
+          name: r827-gradle-plugin-portal-4.3.0
           path: |
-            r827_official_pub_dependency_bundle.tar.gz
+            r827_gradle_plugin_portal_4.3.0.zip
             bundle/reports/
           retention-days: 1
           compression-level: 0
