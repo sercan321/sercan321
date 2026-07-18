@@ -1,5 +1,5 @@
 name: R827 Official Pub Dependency Bundle
-on: [push]
+on: [push, pull_request]
 permissions:
   contents: read
 jobs:
