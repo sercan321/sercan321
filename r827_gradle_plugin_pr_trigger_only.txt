@@ -1,0 +1,1 @@
+Branch-only trigger for exact Gradle Plugin Portal 4.3.0 verification. Never merge.
