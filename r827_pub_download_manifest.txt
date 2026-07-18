@@ -1,0 +1,3 @@
+R827 dependency-only temporary manifest. No MathPro source or secret.
+https://pub.dev/api/packages/flutter_lints/versions/4.0.0
+https://pub.dev/api/archives/flutter_lints-4.0.0.tar.gz
