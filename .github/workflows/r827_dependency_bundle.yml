@@ -1,73 +1,79 @@
-name: R827 Official Gradle Plugin Bundle
+name: R827 Official Flutter Engine Artifact Audit
 on:
   pull_request:
     branches: [master]
 permissions:
   contents: read
 jobs:
-  fetch:
+  audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
-      - name: Fetch and verify exact Gradle Plugin Portal artifacts
+      - name: Fetch and hash exact Flutter engine Maven artifacts
         shell: bash
         run: |
           set -euo pipefail
-          base='https://plugins.gradle.org/m2'
-          out='bundle/repository'
-          reports='bundle/reports'
-          mkdir -p "$out" "$reports"
-          paths=(
-            'org/gradle/kotlin/kotlin-dsl/org.gradle.kotlin.kotlin-dsl.gradle.plugin/4.3.0/org.gradle.kotlin.kotlin-dsl.gradle.plugin-4.3.0.pom'
-            'org/gradle/kotlin/gradle-kotlin-dsl-plugins/4.3.0/gradle-kotlin-dsl-plugins-4.3.0.pom'
-            'org/gradle/kotlin/gradle-kotlin-dsl-plugins/4.3.0/gradle-kotlin-dsl-plugins-4.3.0.module'
-            'org/gradle/kotlin/gradle-kotlin-dsl-plugins/4.3.0/gradle-kotlin-dsl-plugins-4.3.0.jar'
-          )
-          : > "$reports/provenance.tsv"
-          printf 'path\turl\tsha256\tsha1\tsize_bytes\n' >> "$reports/provenance.tsv"
-          for path in "${paths[@]}"; do
-            dst="$out/$path"
-            mkdir -p "$(dirname "$dst")"
-            url="$base/$path"
-            curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-all-errors --connect-timeout 20 --max-time 180 "$url" -o "$dst"
-            sha256=$(sha256sum "$dst" | awk '{print $1}')
-            sha1=$(sha1sum "$dst" | awk '{print $1}')
-            size=$(stat -c %s "$dst")
-            printf '%s\t%s\t%s\t%s\t%s\n' "$path" "$url" "$sha256" "$sha1" "$size" >> "$reports/provenance.tsv"
-            if curl --fail --location --silent --show-error --max-time 60 "$url.sha256" -o "$dst.sha256"; then
-              expected=$(tr -d '[:space:]' < "$dst.sha256")
+          base='https://storage.googleapis.com/download.flutter.io'
+          version='1.0.0-83675ed27633283e7fc296c8bca22e841224c096'
+          mkdir -p bundle/repository/io/flutter bundle/reports work
+          artifacts=(flutter_embedding_debug armeabi_v7a_debug arm64_v8a_debug x86_64_debug)
+          printf 'artifact\tversion\textension\tsize_bytes\tsha256\tsha1\turl\tupstream_checksum\n' > bundle/reports/provenance.tsv
+          for artifact in "${artifacts[@]}"; do
+            rel="io/flutter/$artifact/$version"
+            dir="bundle/repository/$rel"
+            mkdir -p "$dir"
+            pom="$artifact-$version.pom"
+            curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-all-errors --connect-timeout 20 --max-time 180 "$base/$rel/$pom" -o "$dir/$pom"
+            extension=$(python3 - "$dir/$pom" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root=ET.parse(sys.argv[1]).getroot()
+          ns={'m':'http://maven.apache.org/POM/4.0.0'}
+          packaging=root.findtext('m:packaging',default='jar',namespaces=ns).strip()
+          print('aar' if packaging=='aar' else 'jar')
+          PY
+            )
+            file="$artifact-$version.$extension"
+            url="$base/$rel/$file"
+            tmp="work/$file"
+            curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-all-errors --connect-timeout 20 --max-time 900 "$url" -o "$tmp"
+            size=$(stat -c %s "$tmp")
+            sha256=$(sha256sum "$tmp" | awk '{print $1}')
+            sha1=$(sha1sum "$tmp" | awk '{print $1}')
+            checksum='https-download-only'
+            if curl --fail --location --silent --show-error --max-time 60 "$url.sha256" -o "$dir/$file.sha256"; then
+              expected=$(tr -d '[:space:]' < "$dir/$file.sha256")
               test "$expected" = "$sha256"
-            elif curl --fail --location --silent --show-error --max-time 60 "$url.sha1" -o "$dst.sha1"; then
-              expected=$(tr -d '[:space:]' < "$dst.sha1")
+              checksum='sha256'
+            elif curl --fail --location --silent --show-error --max-time 60 "$url.sha1" -o "$dir/$file.sha1"; then
+              expected=$(tr -d '[:space:]' < "$dir/$file.sha1")
               test "$expected" = "$sha1"
-            else
-              echo "No upstream checksum file for $url" >&2
-              exit 2
+              checksum='sha1'
             fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$artifact" "$version" "$extension" "$size" "$sha256" "$sha1" "$url" "$checksum" >> bundle/reports/provenance.tsv
+            # Only retain the embedding artifact. Architecture artifacts will be
+            # independently matched against the exact Flutter SDK engine cache.
+            if [ "$artifact" = flutter_embedding_debug ]; then
+              cp "$tmp" "$dir/$file"
+            fi
+            rm -f "$tmp"
           done
           python3 - <<'PY'
-          import pathlib, xml.etree.ElementTree as ET
-          root = pathlib.Path('bundle/repository')
-          marker = root / 'org/gradle/kotlin/kotlin-dsl/org.gradle.kotlin.kotlin-dsl.gradle.plugin/4.3.0/org.gradle.kotlin.kotlin-dsl.gradle.plugin-4.3.0.pom'
-          pom = ET.parse(marker).getroot()
-          ns = {'m': 'http://maven.apache.org/POM/4.0.0'}
-          dep = pom.find('.//m:dependency', ns)
-          actual = tuple(dep.find(f'm:{n}', ns).text for n in ('groupId','artifactId','version'))
-          expected = ('org.gradle.kotlin','gradle-kotlin-dsl-plugins','4.3.0')
-          if actual != expected:
-              raise SystemExit(f'marker target mismatch: {actual!r}')
-          jar = root / 'org/gradle/kotlin/gradle-kotlin-dsl-plugins/4.3.0/gradle-kotlin-dsl-plugins-4.3.0.jar'
-          if jar.stat().st_size < 40000:
-              raise SystemExit('implementation jar unexpectedly small')
+          import csv, pathlib
+          rows=list(csv.DictReader(pathlib.Path('bundle/reports/provenance.tsv').open(),delimiter='\t'))
+          expected={'flutter_embedding_debug','armeabi_v7a_debug','arm64_v8a_debug','x86_64_debug'}
+          if {r['artifact'] for r in rows} != expected:
+              raise SystemExit(rows)
+          if any(int(r['size_bytes']) <= 0 for r in rows):
+              raise SystemExit(rows)
           PY
-          (cd bundle && zip -qr ../r827_gradle_plugin_portal_4.3.0.zip repository reports)
-          sha256sum r827_gradle_plugin_portal_4.3.0.zip | tee "$reports/bundle.sha256"
-      - name: Upload exact repository bundle
+          (cd bundle && zip -qr ../r827_flutter_engine_artifact_audit.zip repository reports)
+          sha256sum r827_flutter_engine_artifact_audit.zip | tee bundle/reports/bundle.sha256
+      - name: Upload verified metadata and embedding artifact
         uses: actions/upload-artifact@v4
         with:
-          name: r827-gradle-plugin-portal-4.3.0
+          name: r827-flutter-engine-artifact-audit
           path: |
-            r827_gradle_plugin_portal_4.3.0.zip
+            r827_flutter_engine_artifact_audit.zip
             bundle/reports/
           retention-days: 1
           compression-level: 0
