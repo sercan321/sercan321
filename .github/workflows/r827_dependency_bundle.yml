@@ -1,15 +1,15 @@
-name: R827 Official Flutter Engine Artifact Audit
+name: R827 Official Flutter Engine Maven Bundle
 on:
   pull_request:
     branches: [master]
 permissions:
   contents: read
 jobs:
-  audit:
+  bundle:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
-      - name: Fetch and hash exact Flutter engine Maven artifacts
+      - name: Fetch and verify exact Flutter engine Maven artifacts
         shell: bash
         run: |
           set -euo pipefail
@@ -34,11 +34,11 @@ jobs:
             )
             file="$artifact-$version.$extension"
             url="$base/$rel/$file"
-            tmp="work/$file"
-            curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-all-errors --connect-timeout 20 --max-time 900 "$url" -o "$tmp"
-            size=$(stat -c %s "$tmp")
-            sha256=$(sha256sum "$tmp" | awk '{print $1}')
-            sha1=$(sha1sum "$tmp" | awk '{print $1}')
+            dst="$dir/$file"
+            curl --fail --location --proto '=https' --tlsv1.2 --retry 4 --retry-all-errors --connect-timeout 20 --max-time 900 "$url" -o "$dst"
+            size=$(stat -c %s "$dst")
+            sha256=$(sha256sum "$dst" | awk '{print $1}')
+            sha1=$(sha1sum "$dst" | awk '{print $1}')
             checksum='https-download-only'
             if curl --fail --location --silent --show-error --max-time 60 "$url.sha256" -o "$dir/$file.sha256"; then
               expected=$(tr -d '[:space:]' < "$dir/$file.sha256")
@@ -49,13 +49,8 @@ jobs:
               test "$expected" = "$sha1"
               checksum='sha1'
             fi
+            unzip -tq "$dst"
             printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$artifact" "$version" "$extension" "$size" "$sha256" "$sha1" "$url" "$checksum" >> bundle/reports/provenance.tsv
-            # Only retain the embedding artifact. Architecture artifacts will be
-            # independently matched against the exact Flutter SDK engine cache.
-            if [ "$artifact" = flutter_embedding_debug ]; then
-              cp "$tmp" "$dir/$file"
-            fi
-            rm -f "$tmp"
           done
           python3 - <<'PY'
           import csv, pathlib
@@ -66,14 +61,14 @@ jobs:
           if any(int(r['size_bytes']) <= 0 for r in rows):
               raise SystemExit(rows)
           PY
-          (cd bundle && zip -qr ../r827_flutter_engine_artifact_audit.zip repository reports)
-          sha256sum r827_flutter_engine_artifact_audit.zip | tee bundle/reports/bundle.sha256
-      - name: Upload verified metadata and embedding artifact
+          (cd bundle && zip -0 -qr ../r827_flutter_engine_maven_bundle.zip repository reports)
+          sha256sum r827_flutter_engine_maven_bundle.zip | tee bundle/reports/bundle.sha256
+      - name: Upload exact Maven repository bundle
         uses: actions/upload-artifact@v4
         with:
-          name: r827-flutter-engine-artifact-audit
+          name: r827-flutter-engine-maven-bundle
           path: |
-            r827_flutter_engine_artifact_audit.zip
+            r827_flutter_engine_maven_bundle.zip
             bundle/reports/
           retention-days: 1
           compression-level: 0
